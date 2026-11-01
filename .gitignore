@@ -1,0 +1,26 @@
+# --- Dossiers d'outils et de l'éditeur ---
+.claude/
+.agents/
+.vscode/
+.idea/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Identifiants (ne jamais publier) ---
+.aws/
+*.pem
+.env
+credentials*
+
+# --- Données et résultats générés (contiennent l'identifiant du compte AWS) ---
+data/*.csv
+output/
+
+# --- Système ---
+.DS_Store
+Thumbs.db
+desktop.ini
