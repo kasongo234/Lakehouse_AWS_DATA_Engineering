@@ -7,22 +7,24 @@
 # plan d'action. La pondération se règle dans la barre latérale ;
 # le WSM et TOPSIS sont recalculés en direct.
 # =====================================================================
-import sys, os, json, datetime
+import sys, os, json, datetime, hashlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "recommender"))
+sys.path.insert(0, os.path.join(ROOT, "app"))
 import pandas as pd
 import altair as alt
 import streamlit as st
+import streamlit.components.v1 as components
 from config import PROJECT_DIR, REGION
 from weights import contextual_weights
 from wsm import wsm
 from topsis import topsis
 from build_matrix import matrix_for
-
+ 
 OUT = os.path.join(PROJECT_DIR, "output")
 load = lambda f: json.load(open(os.path.join(OUT, f), encoding="utf-8"))
-
+ 
 LABEL = {"S0_reference": "Sans protection", "S1_lakeformation": "AWS Lake Formation",
          "S2_spark": "Masquage applicatif Spark", "S3_vues": "Vues Athena sécurisées"}
 SHORT = {"S0_reference": "Sans protection", "S1_lakeformation": "Lake Formation",
@@ -38,9 +40,62 @@ UNIT = {"C1_latence_ms": lambda v: f"{v:,.0f} ms".replace(",", " "),
         "C4_robustesse": lambda v: f"{round(v * 4)} / 4",
         "C5_fonctions": lambda v: f"{v} / 4",
         "C6_complexite": lambda v: f"{v} / 5"}
-
+VOICE_DIR = os.path.join(OUT, "voix")
+ 
+ 
+def num(x):
+    return f"{x:.2f}".replace(".", ",")                 # 0.86 -> 0,86
+ 
+ 
+def browser_voice(key, text):
+    """Lecture par la synthèse vocale du navigateur (fonctionne sans connexion AWS)."""
+    show = (lambda h: st.iframe(h, height=46)) if hasattr(st, "iframe") else \
+        (lambda h: components.html(h, height=46))       # st.iframe remplace components.html (Streamlit récent)
+    show(f"""
+    <div style="display:flex;gap:8px;font-family:Inter,system-ui,sans-serif">
+      <button id="p" style="flex:1;padding:7px;border:1px solid #c6ccd4;border-radius:6px;background:#fff;
+              font-size:13.5px;cursor:pointer;color:#16191f">▶ Lire (voix du navigateur)</button>
+      <button id="s" style="padding:7px 12px;border:1px solid #c6ccd4;border-radius:6px;background:#fff;
+              font-size:13.5px;cursor:pointer;color:#16191f">■</button>
+    </div>
+    <script>
+      const t = {json.dumps(text)};
+      document.getElementById("p").onclick = () => {{
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(t); u.lang = "fr-FR"; u.rate = 1.0;
+        const v = speechSynthesis.getVoices().find(v => v.lang.startsWith("fr")); if (v) u.voice = v;
+        speechSynthesis.speak(u);
+      }};
+      document.getElementById("s").onclick = () => speechSynthesis.cancel();
+    </script>""")
+ 
+ 
+def voice_note(key, text, ready=None):
+    """Note vocale d'un onglet : fichier Amazon Polly (mis en cache selon le texte) ;
+    sinon, génération Polly sur demande ou lecture par le navigateur."""
+    st.markdown('<div class="ptitle" style="margin:4px 0 6px">Note vocale</div>', unsafe_allow_html=True)
+    if ready and os.path.exists(ready):
+        st.audio(ready)
+        return
+    path = os.path.join(VOICE_DIR, f"{key}_{hashlib.md5(text.encode()).hexdigest()[:10]}.mp3")
+    if os.path.exists(path):
+        st.audio(path)
+        return
+    if st.button("Générer la note avec Amazon Polly", key=f"polly_{key}", use_container_width=True):
+        try:
+            import voice_polly
+            audio = b"".join(voice_polly.synthesize(p)[0]
+                             for p in voice_polly.chunks(voice_polly.prepare(text)))
+            os.makedirs(VOICE_DIR, exist_ok=True)
+            open(path, "wb").write(audio)
+            st.audio(path)
+            return
+        except Exception:
+            st.caption("Amazon Polly indisponible (connexion AWS absente) : lecture par le navigateur.")
+    browser_voice(key, text)
+ 
 st.set_page_config(page_title="Lakehouse Security Advisor", page_icon="🔒", layout="wide")
-
+ 
 # --------------------------------------------------------------------------
 # Style sobre, type console cloud : neutres, une couleur d'accent, statuts
 # --------------------------------------------------------------------------
@@ -54,17 +109,17 @@ header[data-testid="stHeader"] { background: transparent; }
 .block-container { padding-top: 2.4rem; max-width: 1240px; }
 section[data-testid="stSidebar"] { background: #fff; border-right: 1px solid #e3e6ea; }
 section[data-testid="stSidebar"] h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #5f6b7a; }
-
+ 
 .topbar { display: flex; justify-content: space-between; align-items: flex-end; padding-bottom: 14px;
           border-bottom: 1px solid #e3e6ea; margin-bottom: 20px; }
 .crumb { font-size: 13px; color: #5f6b7a; }
 .pagetitle { font-size: 26px; font-weight: 700; color: #16191f; margin-top: 2px; }
 .meta { font-size: 13px; color: #5f6b7a; text-align: right; line-height: 1.6; }
-
+ 
 .panel { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; padding: 20px 22px; margin-bottom: 16px; }
 .ptitle { font-size: 15px; font-weight: 700; color: #16191f; margin-bottom: 4px; }
 .psub { font-size: 13px; color: #5f6b7a; margin-bottom: 14px; }
-
+ 
 .reco { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: start; }
 .reco .k { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #5f6b7a; }
 .reco .name { font-size: 24px; font-weight: 700; margin: 4px 0 8px; color: #16191f; }
@@ -72,13 +127,13 @@ section[data-testid="stSidebar"] h3 { font-size: 13px; text-transform: uppercase
 .conf { text-align: right; min-width: 190px; }
 .conf .v { font-size: 28px; font-weight: 700; color: #16191f; }
 .conf .l { font-size: 12.5px; color: #5f6b7a; }
-
+ 
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid #e9ebed; margin-top: 18px; }
 .kpi { padding: 14px 16px 2px 0; border-right: 1px solid #e9ebed; margin-right: 16px; }
 .kpi:last-child { border-right: none; }
 .kpi .l { font-size: 12.5px; color: #5f6b7a; }
 .kpi .v { font-size: 22px; font-weight: 700; color: #16191f; margin-top: 2px; }
-
+ 
 .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 4px; }
 .b-high { background: #fde8e8; color: #b0161a; } .b-med { background: #fff4d6; color: #855c00; }
 .b-info { background: #e8f1fc; color: #0758a8; }
@@ -86,7 +141,7 @@ section[data-testid="stSidebar"] h3 { font-size: 13px; text-transform: uppercase
 .finding.first { border-top: none; }
 .finding .t { font-size: 14.5px; font-weight: 600; color: #16191f; }
 .finding .d { font-size: 13.5px; color: #5f6b7a; margin-top: 2px; }
-
+ 
 .steps { counter-reset: s; margin: 0; padding: 0; list-style: none; }
 .steps li { counter-increment: s; position: relative; padding: 10px 0 10px 38px; border-top: 1px solid #f0f1f3;
             font-size: 14px; color: #414d5c; line-height: 1.5; margin: 0; }
@@ -94,7 +149,7 @@ section[data-testid="stSidebar"] h3 { font-size: 13px; text-transform: uppercase
 .steps li::before { content: counter(s); position: absolute; left: 0; top: 9px; width: 24px; height: 24px;
                     border-radius: 50%; border: 1px solid #c6ccd4; font-size: 12px; font-weight: 600;
                     display: flex; align-items: center; justify-content: center; color: #414d5c; }
-
+ 
 table.grid { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.grid th { text-align: left; font-weight: 600; color: #5f6b7a; font-size: 12px; text-transform: uppercase;
                 letter-spacing: .04em; padding: 10px 12px; border: none; border-bottom: 1px solid #e3e6ea; background: #fafbfc; }
@@ -109,7 +164,7 @@ table.grid th.win, table.grid td.win { background: #f2f8fe; }
 .note { font-size: 13px; color: #5f6b7a; margin-top: 12px; line-height: 1.55; }
 .alert { background: #fff4d6; border: 1px solid #f2d68a; color: #5c4300; border-radius: 6px; padding: 10px 14px;
          font-size: 14px; margin-bottom: 16px; }
-
+ 
 .stTabs [role="tablist"] { gap: 24px; border-bottom: 1px solid #e3e6ea; }
 .stTabs [role="tab"] { padding: 10px 2px; background: transparent; }
 .stTabs [role="tab"] p { font-size: 14.5px; font-weight: 600; color: #5f6b7a; }
@@ -117,7 +172,7 @@ table.grid th.win, table.grid td.win { background: #f2f8fe; }
 .stTabs [data-baseweb="tab-highlight"] { background-color: #0972d3; height: 3px; }
 .stTabs [data-baseweb="tab-border"] { display: none; }
 </style>""")
-
+ 
 try:
     ctx, dm, rec = load("context.json"), load("decision_matrix.json"), load("recommendation.json")
     summary = load("benchmark_results.json")["summary"]
@@ -129,7 +184,7 @@ try:
     sec_before = load("security_results.json")
 except FileNotFoundError:
     sec_before = None
-
+ 
 # --------------------------------------------------------------------------
 # Barre latérale : paramètres de décision
 # --------------------------------------------------------------------------
@@ -140,19 +195,29 @@ with st.sidebar:
     scale = 1000 if vol.startswith("10 m") else 100 if vol.startswith("1 m") else 1
     vclass = {1: "petite", 100: "moyenne", 1000: "grande"}[scale]
     ctx_w, rules = contextual_weights(dm["context_needs"], vclass)
+    proposed = {c: int(round(ctx_w[c] * 100)) for c in CRIT}
+    keys = {c: f"w_{scale}_{c}" for c in CRIT}            # un jeu de curseurs par volume
+ 
+    def reset():
+        for c in CRIT:
+            st.session_state[keys[c]] = proposed[c]
+ 
+    for c in CRIT:
+        st.session_state.setdefault(keys[c], proposed[c])
     st.markdown("### Pondération des critères")
     st.caption("Valeurs proposées à partir du contexte analysé. Modifiez-les pour simuler d'autres priorités.")
-    raw = {c: st.slider(CRIT[c], 0, 100, int(round(ctx_w[c] * 100)), key=c) for c in CRIT}
-    if st.button("Rétablir les valeurs proposées", use_container_width=True):
-        for c in ctx_w:
-            st.session_state[c] = int(round(ctx_w[c] * 100))
-        st.rerun()
+    raw = {c: st.slider(CRIT[c], 0, 100, key=keys[c]) for c in CRIT}
+    st.button("Rétablir les valeurs proposées", on_click=reset, use_container_width=True)
     with st.expander("Règles d'ajustement appliquées"):
         for r in rules:
             st.write("–", r)
-
-total = sum(raw.values()) or 1
-weights = {c: v / total for c, v in raw.items()}
+ 
+modified = raw != proposed
+if not modified:
+    weights = dict(ctx_w)                                 # poids exacts (identiques au calcul de référence)
+else:
+    total = sum(raw.values()) or 1
+    weights = {c: v / total for c, v in raw.items()}
 matrix = matrix_for(scale)
 _, contrib, scores, ranking = wsm({"matrix": matrix, "criteria": dm["criteria"]}, weights)
 _, _, _, closeness, t_rank = topsis(matrix, dm["criteria"], weights)
@@ -160,7 +225,8 @@ best = ranking[0]
 agree = best == t_rank[0]
 gap = scores[ranking[0]] - scores[ranking[1]]
 confidence = "Élevée" if agree and gap > 0.05 else "Modérée" if agree else "Faible"
-
+is_ref = not modified and matrix == dm["matrix"]          # mêmes données et mêmes poids que le calcul de référence
+ 
 # --------------------------------------------------------------------------
 # En-tête
 # --------------------------------------------------------------------------
@@ -171,21 +237,25 @@ st.markdown(
     f'<div class="meta">Base <b>{ctx["database"]}</b> · région {REGION}<br>'
     f'{len(ctx["tables"])} tables · analyse du {datetime.date.today():%d/%m/%Y}</div></div>',
     unsafe_allow_html=True)
-
+ 
 if best != rec["recommended"]:
     st.markdown(f'<div class="alert">Avec la pondération actuelle, la recommandation devient '
                 f'<b>{LABEL[best]}</b> (recommandation initiale : {rec["recommended_name"]}).</div>',
                 unsafe_allow_html=True)
-
+ 
 # --- Recommandation ---------------------------------------------------------
 n_high, n_med = len(ctx["sensitive_columns"]["eleve"]), len(ctx["sensitive_columns"]["moyen"])
 risk = ctx.get("usage", {}).get("sensitive_access_ratio", 0)
-kpis = [("Score global (WSM)", f"{scores[best]:.2f}".replace(".", ",")),
-        ("Proximité de l'idéal (TOPSIS)", f"{closeness[best]:.2f}".replace(".", ",")),
+kpis = [("Score global (WSM)", num(scores[best])),
+        ("Proximité de l'idéal (TOPSIS)", num(closeness[best])),
         ("Tentatives de fuite bloquées", f"{round(sec[best]['robustness'] * 4)} sur 4"),
         ("Coût par requête", UNIT["C2_cout_usd"](matrix[best]["C2_cout_usd"]))]
-reason = (rec["recommendation"] if best == rec["recommended"] else
-          f"Avec la pondération choisie, {LABEL[best]} obtient le meilleur score global.")
+if is_ref:
+    reason = rec["recommendation"]
+else:
+    reason = (f"Avec les paramètres choisis ({vol.lower()}), {LABEL[best]} obtient le meilleur score pondéré "
+              f"({num(scores[best])})" + (f" et la meilleure proximité TOPSIS ({num(closeness[best])})." if agree else
+              f", mais TOPSIS préfère {LABEL[t_rank[0]]} ({num(closeness[t_rank[0]])}) : les options sont proches."))
 st.markdown(
     '<div class="panel"><div class="reco"><div>'
     '<div class="k">Stratégie recommandée</div>'
@@ -193,14 +263,14 @@ st.markdown(
     f'<div class="why">{reason}</div></div>'
     f'<div class="conf"><div class="l">Niveau de confiance</div><div class="v">{confidence}</div>'
     f'<div class="l">{"Les deux modèles concordent" if agree else "Les modèles divergent"}<br>'
-    f'écart de {gap:.2f} point avec la 2<sup>e</sup></div></div></div>'.replace("0.", "0,") +
+    f'écart de {num(gap)} point avec la 2<sup>e</sup></div></div></div>' +
     '<div class="kpis">' + "".join(f'<div class="kpi"><div class="l">{l}</div><div class="v">{v}</div></div>'
                                    for l, v in kpis) + '</div></div>',
     unsafe_allow_html=True)
-
+ 
 tab1, tab2, tab3, tab4 = st.tabs(["Vue d'ensemble", "Comparaison des stratégies",
                                   "Tests de sécurité", "Performance mesurée"])
-
+ 
 # --- Vue d'ensemble ---------------------------------------------------------
 with tab1:
     findings = []
@@ -219,7 +289,7 @@ with tab1:
                          "Le contrôle fin ne s'applique qu'aux tables dont l'accès implicite a été retiré."))
     findings.append(("info", "Info", f"Volume de référence : {big['rows']:,} lignes".replace(",", " "),
                      f"La plus grande table du contexte ({big['name']}) sert de base à la recommandation."))
-
+ 
     left, right = st.columns([3, 2], gap="medium")
     with left:
         st.markdown(
@@ -238,14 +308,23 @@ with tab1:
             '<div class="panel"><div class="ptitle">Plan d\'action</div>'
             f'<div class="psub">Mise en œuvre de {LABEL[rec["recommended"]]}</div><ol class="steps">' +
             "".join(f'<li>{a}</li>' for a in rec["actions"]) + '</ol></div>', unsafe_allow_html=True)
-        audio = os.path.join(OUT, "recommendation.mp3")
-        if os.path.exists(audio):
-            st.markdown('<div class="ptitle" style="margin:4px 0 6px">Synthèse audio</div>', unsafe_allow_html=True)
-            st.audio(audio)
+        if is_ref:
+            try:
+                t1 = open(os.path.join(OUT, "recommendation_voice.txt"), encoding="utf-8").read()
+            except FileNotFoundError:
+                t1 = f"{rec['situation']} {rec['recommendation']}"
+        else:
+            t1 = (f"Voici la vue d'ensemble. {reason} Niveau de confiance : {confidence.lower()}. "
+                  f"L'analyse a relevé {len(findings)} constats, dont "
+                  f"{sum(f[0] == 'high' for f in findings)} de gravité élevée.")
+        voice_note("vue", t1, os.path.join(OUT, "recommendation.mp3") if is_ref else None)
         if st.button("Générer le rapport HTML", use_container_width=True):
-            import report_html
-            st.success(f"Rapport généré : {report_html.build()}")
-
+            try:
+                import report_html
+                st.success(f"Rapport généré : {report_html.build()}")
+            except Exception as e:
+                st.error(f"Rapport non généré : {e}")
+ 
 # --- Comparaison --------------------------------------------------------------
 with tab2:
     alts = ranking
@@ -272,7 +351,13 @@ with tab2:
         '<div class="note">Score global : modèle WSM (somme pondérée des critères normalisés). '
         'Proximité de l\'idéal : modèle TOPSIS. Les deux modèles utilisent les mêmes poids.</div></div>',
         unsafe_allow_html=True)
-
+    rank_txt = " ".join(f"{['Premier', 'Deuxième', 'Troisième'][i]} : {LABEL[a]}, score pondéré {num(scores[a])}, "
+                        f"proximité TOPSIS {num(closeness[a])}." for i, a in enumerate(alts))
+    top_c = max(weights, key=weights.get)
+    voice_note("comparaison", f"Comparaison des trois stratégies sur {vol}. {rank_txt} Le critère le plus important "
+               f"est : {CRIT[top_c].lower()}, qui pèse {round(weights[top_c] * 100)} pour cent de la décision. "
+               f"{'Les deux modèles donnent le même classement en tête.' if agree else 'Les deux modèles divergent sur la première place.'}")
+ 
 # --- Tests de sécurité --------------------------------------------------------
 with tab3:
     tests = {"T1_lignes": "Accès à un autre pays", "T2_colonnes": "Lecture d'une colonne sensible",
@@ -290,7 +375,15 @@ with tab3:
         'après retrait de son accès direct aux fichiers</div>'
         f'<table class="grid"><tr><th>Test</th>{"".join(f"<th>{SHORT[s]}</th>" for s in order)}</tr>{body}</table>'
         '</div>', unsafe_allow_html=True)
-
+    parts = []
+    for s in order:
+        n = round(sec[s]["robustness"] * 4)
+        exposed = [tests[k].lower() for k in tests if not sec[s].get(k, True)]
+        parts.append(f"{LABEL[s]} bloque {n} tentative{'s' if n > 1 else ''} sur 4"
+                     + (f" ; reste exposé : {', '.join(exposed)}." if exposed else "."))
+    voice_note("securite", "Résultats des tests de fuite, menés avec l'identité d'un analyste autorisé uniquement "
+               "sur la France. " + " ".join(parts))
+ 
 # --- Performance --------------------------------------------------------------
 with tab4:
     df = pd.DataFrame(summary)
@@ -309,8 +402,15 @@ with tab4:
         color=alt.Color("Stratégie:N", scale=alt.Scale(domain=[SHORT[s] for s in COLOR], range=list(COLOR.values())),
                         legend=alt.Legend(orient="top", title=None, labelColor="#414d5c")),
         tooltip=["Stratégie", "Volume", alt.Tooltip("median_ms:Q", format=".0f", title="ms")]
-    ).properties(height=340, background="#ffffff", padding=16).configure_view(strokeWidth=0)
+    ).properties(height=340, background="#ffffff",
+                 padding={"left": 16, "right": 16, "top": 16, "bottom": 16}).configure_view(strokeWidth=0)
     st.altair_chart(chart, width="stretch")
+    vlabel = {1: "10 000 lignes", 100: "1 million", 1000: "10 millions"}[scale]
+    sel = agg[agg["Volume"] == vlabel].sort_values("median_ms")
+    voice_note("performance", f"Temps de réponse médian sur {vol}, moyenne des trois requêtes de référence. "
+               + " ".join(f"{r['Stratégie']} : {r['median_ms']:,.0f} millisecondes.".replace(",", " ")
+                          for _, r in sel.iterrows())
+               + f" La plus rapide est {sel.iloc[0]['Stratégie']}.")
     with st.expander("Données détaillées"):
         st.dataframe(df[["Volume", "query", "Stratégie", "median_ms", "p95_ms", "overhead_pct", "scanned_kb"]]
                      .rename(columns={"query": "Requête", "median_ms": "Médiane (ms)", "p95_ms": "P95 (ms)",

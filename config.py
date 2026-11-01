@@ -10,7 +10,10 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 # --- AWS ---------------------------------------------------------------
 REGION = "eu-west-3"                                   # Paris
 PREFIX = "lakehouse-memoire"
-ACCOUNT = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+try:
+    ACCOUNT = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+except Exception:                                      # hors connexion AWS (ex. démonstration)
+    ACCOUNT = None
 
 # --- Stockage S3 -------------------------------------------------------
 RAW_BUCKET = f"{PREFIX}-raw-{ACCOUNT}"                 # zone brute
